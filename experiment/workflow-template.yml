@@ -38,7 +38,7 @@ env:
   # These are the git object ids at upstream e55f9f0e (the commit verified
   # locally: offline tests and image build).
   SUBJECT_UPSTREAM_SHA: e55f9f0e43b022a8db6e5aac4e6d8aa247a11399
-  SUBJECT_APPS_TREE: cefb4cb4b73659141c0e17b18a15eb1e62448681
+  SUBJECT_APPS_TREE: 67ca8089d5b5b7093d629ab97a83880e0db8a7ee
   SUBJECT_LOCK_BLOB: 9cb769e46d73b3de6b85ffb1cc370a1c091c5e05
   SUBJECT_PKG_BLOB: 9d6d078dad38a27170aac74a91ef64d1dcee70ee
   # Controls
