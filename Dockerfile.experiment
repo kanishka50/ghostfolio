@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# ADDED FOR THE GREEN DEVOPS EXPERIMENT. Not part of the upstream project.
+#
+# Packages the artefacts the pipeline has already produced (dist/ from the
+# build stage, node_modules from the install stage) into a runnable image, so
+# that the deploy stage does not repeat the install and build stages. The
+# upstream Dockerfile deliberately does repeat them; that variant is measured
+# separately on the hmpps subject.
+#
+# Nothing is pushed to any registry.
+# ---------------------------------------------------------------------------
+FROM node:22-slim
+
+WORKDIR /ghostfolio
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+COPY node_modules ./node_modules
+COPY dist ./dist
+
+EXPOSE 3333
+
+CMD ["node", "dist/apps/api/main"]

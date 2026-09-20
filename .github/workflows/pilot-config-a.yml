@@ -1,0 +1,270 @@
+# GENERATED FILE - do not edit. Source: experiment/workflow-template.yml
+# Regenerate with: bash experiment/generate-workflows.sh
+# ---------------------------------------------------------------------------
+# TEMPLATE. Do not edit the generated workflow files; edit this and re-run
+#   bash experiment/generate-workflows.sh
+#
+# The two pilot workflows are generated from this one file so that Config A and
+# Config B cannot drift apart in any respect other than the single variable
+# under test.
+# ---------------------------------------------------------------------------
+name: Pilot - Config A (Full, uncached)
+
+# ---------------------------------------------------------------------------
+# PILOT - Green DevOps experiment (Phase 7). NOT final data collection.
+#
+# Subject application: ghostfolio/ghostfolio, a NestJS + Angular application.
+# It is measured because its composition is the OPPOSITE of the other subjects:
+# the largest dependency tree of the candidates (942 non-dev packages) against a
+# comparatively small test suite. The quantity being compared across subjects is
+# install's SHARE of pipeline energy, which decides how much of a dependency
+# caching effect can survive aggregation to the pipeline level.
+#
+# A and B differ in EXACTLY ONE thing: the `cache:` key on setup-node.
+#
+# Stage commands mirror the project's own CI (.github/workflows/build-code.yml)
+# so that what is measured is this project's pipeline, not one invented for it.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CONFIG_ID: 'A'
+  # The subject application is pinned by the CONTENT of its source, not by the
+  # commit: the experiment's own commits sit on top of the upstream commit, so
+  # the HEAD sha necessarily differs while the measured workload must not.
+  # These are the git object ids at upstream e55f9f0e (the commit verified
+  # locally: offline tests and image build).
+  SUBJECT_UPSTREAM_SHA: e55f9f0e43b022a8db6e5aac4e6d8aa247a11399
+  SUBJECT_APPS_TREE: cefb4cb4b73659141c0e17b18a15eb1e62448681
+  SUBJECT_LOCK_BLOB: 9cb769e46d73b3de6b85ffb1cc370a1c091c5e05
+  SUBJECT_PKG_BLOB: 9d6d078dad38a27170aac74a91ef64d1dcee70ee
+  # Controls
+  TZ: UTC
+  LANG: C.UTF-8
+  FORCE_COLOR: '0'
+  # Nx keeps a LOCAL task cache. A restored task cache would make a stage skip
+  # work it is supposed to perform, which would silently corrupt the comparison,
+  # so it is disabled everywhere.
+  NX_SKIP_NX_CACHE: 'true'
+  NX_DAEMON: 'false'
+
+jobs:
+  run:
+    name: Config A - Full, uncached
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Log runner context
+        run: |
+          echo "RUN_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "=== RUNNER CONTEXT (control variables) ==="
+          echo "Config:   ${{ env.CONFIG_ID }}"
+          echo "Image:    ${ImageOS:-unknown} / ${ImageVersion:-unknown}"
+          echo "CPU:      $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+          echo "Cores:    $(nproc)"
+          echo "Kernel:   $(uname -r)"
+
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the measured workload is the pinned one
+        run: |
+          APPS_TREE="$(git rev-parse HEAD:apps)"
+          LOCK_BLOB="$(git rev-parse HEAD:package-lock.json)"
+          PKG_BLOB="$(git rev-parse HEAD:package.json)"
+          echo "HEAD commit : $(git rev-parse HEAD)"
+          echo "apps tree   : $APPS_TREE"
+          echo "lock blob   : $LOCK_BLOB"
+          echo "package blob: $PKG_BLOB"
+          fail=0
+          [ "$APPS_TREE" = "${{ env.SUBJECT_APPS_TREE }}" ] || { echo "::error::apps/ tree differs from the pinned workload."; fail=1; }
+          [ "$LOCK_BLOB" = "${{ env.SUBJECT_LOCK_BLOB }}" ] || { echo "::error::package-lock.json differs from the pinned workload."; fail=1; }
+          [ "$PKG_BLOB"  = "${{ env.SUBJECT_PKG_BLOB }}"  ] || { echo "::error::package.json differs from the pinned workload."; fail=1; }
+          if [ "$fail" = "1" ]; then
+            echo "The workload has drifted from upstream ${{ env.SUBJECT_UPSTREAM_SHA }}; do not use this run."
+            exit 1
+          fi
+          echo "Workload matches the pinned upstream source."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          # NO `cache:` key here. Config A is the UNCACHED baseline.
+
+      - name: ECO-CI - start measurement
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: start-measurement
+          send-data: false
+          json-output: true
+
+      # ================= STAGE 1: INSTALL =================
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ECO-CI - measure install
+        id: eco_install
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: get-measurement
+          label: install
+          send-data: false
+
+      # ================= STAGE 2: LINT =================
+      - name: Lint
+        run: npx nx run-many --target=lint --all --skip-nx-cache
+
+      - name: ECO-CI - measure lint
+        id: eco_lint
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: get-measurement
+          label: lint
+          send-data: false
+
+      # ================= STAGE 3: TEST =================
+      # The project's own test script pipes through `npx dotenv-cli -e
+      # .env.example`, and dotenv-cli is NOT a dependency, so npx downloads it
+      # from the registry on every run. That would put a network fetch inside
+      # the measured test stage. The same variables are therefore supplied
+      # directly here; the values are the placeholders from .env.example, which
+      # is all the tests require (nothing connects to a database).
+      - name: Test
+        env:
+          REDIS_HOST: redis
+          REDIS_PORT: '6379'
+          REDIS_PASSWORD: pilot
+          POSTGRES_DB: ghostfolio-db
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: pilot
+          ACCESS_TOKEN_SALT: pilot-fixed-salt
+          DATABASE_URL: postgresql://user:pilot@postgres:5432/ghostfolio-db?connect_timeout=300
+          JWT_SECRET_KEY: pilot-fixed-secret
+        run: npx nx run-many --target=test --all --parallel=4 --skip-nx-cache
+
+      - name: ECO-CI - measure test
+        id: eco_test
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: get-measurement
+          label: test
+          send-data: false
+
+      # ================= STAGE 4: BUILD =================
+      - name: Build
+        run: npm run build:production
+
+      - name: ECO-CI - measure build
+        id: eco_build
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: get-measurement
+          label: build
+          send-data: false
+
+      # ================= STAGE 5: DEPLOY (package) =================
+      # Packages the artefacts the preceding stages already produced into a
+      # runnable image, so that each stage performs DISTINCT work and the
+      # per-stage profile is a decomposition rather than a double count. The
+      # project's own Dockerfile re-runs install and build inside the image;
+      # that variant is measured on the hmpps subject, where the two deploy
+      # definitions are being compared. Nothing is pushed to any registry.
+      - name: Deploy (package built app into image)
+        run: docker build -f Dockerfile.experiment -t ghostfolio:packaged .
+
+      - name: ECO-CI - measure deploy
+        id: eco_deploy
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: get-measurement
+          label: deploy-package
+          send-data: false
+
+      # ================= RESULTS =================
+      - name: ECO-CI - display results
+        id: eco_total
+        uses: green-coding-solutions/eco-ci-energy-estimation@v5
+        with:
+          task: display-results
+          send-data: false
+
+      - name: Write result files
+        if: always()
+        run: |
+          mkdir -p results
+          cp -r /tmp/eco-ci results/eco-ci-raw 2>/dev/null \
+            || echo "WARNING: /tmp/eco-ci not present"
+
+          CPU="$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+          {
+            echo '{'
+            echo '  "config": "A",'
+            echo '  "subject": "ghostfolio",'
+            echo '  "run_id": "${{ github.run_id }}",'
+            echo '  "run_number": "${{ github.run_number }}",'
+            echo '  "run_attempt": "${{ github.run_attempt }}",'
+            echo '  "commit": "'"$(git rev-parse HEAD)"'",'
+            echo '  "apps_tree": "'"$(git rev-parse HEAD:apps)"'",'
+            echo '  "runner_image": "'"${ImageOS:-unknown}/${ImageVersion:-unknown}"'",'
+            echo '  "cpu_model": "'"$CPU"'",'
+            echo '  "cpu_cores": "'"$(nproc)"'",'
+            echo '  "eco_power_model": "github_EPYC_7763_4_CPU_shared.sh",'
+            echo '  "started_utc": "${{ env.RUN_STARTED }}",'
+            echo '  "finished_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"'
+            echo '}'
+          } > results/meta.json
+          cat results/meta.json
+
+          VARS=results/eco-ci-raw/vars.sh
+          getvar() {
+            grep -m1 -E "^(export[[:space:]]+)?$1=" "$VARS" 2>/dev/null \
+              | sed -E "s/^(export[[:space:]]+)?$1=//" \
+              | sed -E "s/^[\"']//; s/[\"']$//"
+          }
+
+          echo "config,run_id,run_number,cpu_model,stage_index,label,cpu_avg_pct,energy_j,power_avg_w,duration_s" > results/measurements.csv
+          i=1
+          while [ -n "$(getvar "ECO_CI_MEASUREMENT_${i}_LABEL")" ]; do
+            printf '%s,%s,%s,"%s",%s,%s,%s,%s,%s,%s\n' \
+              "A" \
+              "${{ github.run_id }}" \
+              "${{ github.run_number }}" \
+              "$CPU" \
+              "$i" \
+              "$(getvar "ECO_CI_MEASUREMENT_${i}_LABEL")" \
+              "$(getvar "ECO_CI_MEASUREMENT_${i}_CPU_AVG")" \
+              "$(getvar "ECO_CI_MEASUREMENT_${i}_ENERGY")" \
+              "$(getvar "ECO_CI_MEASUREMENT_${i}_POWER_AVG")" \
+              "$(getvar "ECO_CI_MEASUREMENT_${i}_TIME")" \
+              >> results/measurements.csv
+            i=$((i + 1))
+          done
+          cat results/measurements.csv
+
+          rows=$(( $(wc -l < results/measurements.csv) - 1 ))
+          if [ "$rows" -lt 5 ]; then
+            echo "::error::Parsed $rows measurement rows, expected 5. Do not collect data until this is fixed."
+            exit 1
+          fi
+
+          case "$CPU" in
+            *7763*) echo "Power model MATCHES runner CPU ($CPU)." ;;
+            *) echo "::warning::Runner CPU is '$CPU' but ECO-CI estimates with the EPYC 7763 power model. Absolute Joules carry a systematic bias - stratify by cpu_model at analysis." ;;
+          esac
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-A-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/
+          retention-days: 30
+          if-no-files-found: error
