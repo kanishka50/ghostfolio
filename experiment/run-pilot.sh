@@ -10,9 +10,10 @@
 #      configuration and be indistinguishable from a treatment effect. The
 #      order is shuffled, and the seed is recorded so the schedule reproduces.
 #
-# Usage:  bash experiment/run-pilot.sh [REPLICATES] [SEED] [CONFIGS]
+# Usage:  bash experiment/run-pilot.sh [REPLICATES] [SEED] [CONFIGS] [SKIP]
 #         bash experiment/run-pilot.sh 2 20260920          # 2 of each: 12 runs
 #         bash experiment/run-pilot.sh 1 20260920 "C E"    # validate two configs
+#         bash experiment/run-pilot.sh 9 20260922 "A B C D E F" 9  # resume after run 9
 
 set -euo pipefail
 
@@ -20,6 +21,7 @@ REPO="kanishka50/ghostfolio"
 REPLICATES="${1:-2}"
 SEED="${2:-20260920}"
 CONFIGS="${3:-A B C D E F}"
+SKIP="${4:-0}"   # resume: skip the first SKIP entries of the seeded schedule
 
 GH="gh"
 command -v gh >/dev/null 2>&1 || GH="/c/Program Files/GitHub CLI/gh.exe"
@@ -49,6 +51,7 @@ echo
 n=0
 for cfg in $SCHEDULE; do
   n=$((n + 1))
+  [ "$n" -le "$SKIP" ] && continue
   wf="config-$(echo "$cfg" | tr '[:upper:]' '[:lower:]').yml"
 
   echo "----------------------------------------------"
@@ -66,7 +69,13 @@ for cfg in $SCHEDULE; do
   # is not trusted, because it has been observed returning non-zero for a run
   # that GitHub recorded as successful (a multi-job Config E run). The
   # authoritative check is the conclusion reported by the API afterwards.
-  "$GH" run watch "$run_id" --repo "$REPO" >/dev/null 2>&1 || true
+  #
+  # `gh run watch` can also RETURN EARLY, while the run is still in progress
+  # (observed on ghostfolio run 35576029304, most likely a transient API
+  # error). So it is repeated until the API itself reports the run completed.
+  until [ "$("$GH" run view "$run_id" --repo "$REPO" --json status --jq '.status' 2>/dev/null)" = "completed" ]; do
+    "$GH" run watch "$run_id" --repo "$REPO" >/dev/null 2>&1 || sleep 30
+  done
 
   conclusion=$("$GH" run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')
   if [ "$conclusion" != "success" ]; then
