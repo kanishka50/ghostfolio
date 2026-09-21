@@ -60,8 +60,15 @@ for cfg in $SCHEDULE; do
   "$GH" workflow run "$wf" --repo "$REPO"
 
   sleep 8
-  run_id=$("$GH" run list --repo "$REPO" --workflow "$wf" --limit 1 \
-             --json databaseId --jq '.[0].databaseId')
+  # Retried: a transient network error here once killed a batch after the
+  # run had already been dispatched (hmpps run 35577796654).
+  run_id=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    run_id=$("$GH" run list --repo "$REPO" --workflow "$wf" --limit 1 \
+               --json databaseId --jq '.[0].databaseId' 2>/dev/null) && [ -n "$run_id" ] && break
+    sleep 15
+  done
+  [ -n "$run_id" ] || { echo "!! Could not look up the run for Config $cfg."; exit 1; }
 
   echo "[$n/$TOTAL] Run $run_id started - waiting"
 
