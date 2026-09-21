@@ -1,44 +1,47 @@
 #!/usr/bin/env bash
-# Dispatch the Config A / Config B pilot pair, STRICTLY ONE RUN AT A TIME.
+# Dispatch the six-configuration experiment, STRICTLY ONE RUN AT A TIME.
 #
 # Two properties this script exists to guarantee:
 #   1. SERIAL EXECUTION. Concurrent runs would share GitHub's infrastructure
 #      and contaminate each other's measurements, so each run is watched to
 #      completion before the next is dispatched.
-#   2. RANDOMISED ORDER FROM A FIXED SEED. If configurations ran in a fixed
-#      A,B,A,B order, any drift in GitHub's runner fleet over the collection
-#      window would align with configuration and be indistinguishable from a
-#      treatment effect. The order is shuffled, and the seed is recorded so the
-#      schedule is reproducible.
+#   2. RANDOMISED ORDER FROM A FIXED SEED. In a fixed A,B,C,D,E,F order any drift
+#      in GitHub's runner fleet over the collection window would align with
+#      configuration and be indistinguishable from a treatment effect. The
+#      order is shuffled, and the seed is recorded so the schedule reproduces.
 #
-# Usage:  bash experiment/run-pilot.sh [REPLICATES] [SEED]
-#         bash experiment/run-pilot.sh 10 20260916
+# Usage:  bash experiment/run-pilot.sh [REPLICATES] [SEED] [CONFIGS]
+#         bash experiment/run-pilot.sh 2 20260920          # 2 of each: 12 runs
+#         bash experiment/run-pilot.sh 1 20260920 "C E"    # validate two configs
 
 set -euo pipefail
 
 REPO="kanishka50/ghostfolio"
-REPLICATES="${1:-10}"
+REPLICATES="${1:-2}"
 SEED="${2:-20260920}"
+CONFIGS="${3:-A B C D E F}"
 
 GH="gh"
 command -v gh >/dev/null 2>&1 || GH="/c/Program Files/GitHub CLI/gh.exe"
 
-# Build the schedule: REPLICATES of each config, shuffled from the fixed seed.
 SCHEDULE=$(
   {
-    for _ in $(seq 1 "$REPLICATES"); do echo A; echo B; done
+    for _ in $(seq 1 "$REPLICATES"); do
+      for c in $CONFIGS; do echo "$c"; done
+    done
   } | shuf --random-source=<(yes "$SEED")
 )
 
 TOTAL=$(echo "$SCHEDULE" | wc -l)
 
 echo "=============================================="
-echo " Green DevOps pilot - variance measurement"
+echo " Green DevOps - six-configuration experiment"
 echo "=============================================="
 echo "Repository : $REPO"
+echo "Configs    : $CONFIGS"
 echo "Replicates : $REPLICATES per configuration"
 echo "Seed       : $SEED"
-echo "Total runs : $TOTAL (serial, ~8 min each)"
+echo "Total runs : $TOTAL (serial)"
 echo
 echo "Schedule   : $(echo "$SCHEDULE" | tr '\n' ' ')"
 echo
@@ -46,26 +49,30 @@ echo
 n=0
 for cfg in $SCHEDULE; do
   n=$((n + 1))
-  wf="pilot-config-$(echo "$cfg" | tr '[:upper:]' '[:lower:]').yml"
+  wf="config-$(echo "$cfg" | tr '[:upper:]' '[:lower:]').yml"
 
   echo "----------------------------------------------"
-  echo "[$n/$TOTAL] Dispatching Config $cfg ($wf)"
+  echo "[$n/$TOTAL] Dispatching Config $cfg ($wf)  $(date -u +%H:%M:%SZ)"
 
   "$GH" workflow run "$wf" --repo "$REPO"
 
-  # The run needs a moment to be registered before its ID can be read back.
   sleep 8
   run_id=$("$GH" run list --repo "$REPO" --workflow "$wf" --limit 1 \
              --json databaseId --jq '.[0].databaseId')
 
-  echo "[$n/$TOTAL] Run $run_id started - waiting for it to finish"
+  echo "[$n/$TOTAL] Run $run_id started - waiting"
 
-  # --exit-status makes a failed run fail this script, so a broken harness
-  # stops collection immediately instead of producing unusable rows.
-  if ! "$GH" run watch "$run_id" --repo "$REPO" --exit-status >/dev/null 2>&1; then
+  # `gh run watch` is used only to BLOCK until the run finishes; its exit code
+  # is not trusted, because it has been observed returning non-zero for a run
+  # that GitHub recorded as successful (a multi-job Config E run). The
+  # authoritative check is the conclusion reported by the API afterwards.
+  "$GH" run watch "$run_id" --repo "$REPO" >/dev/null 2>&1 || true
+
+  conclusion=$("$GH" run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')
+  if [ "$conclusion" != "success" ]; then
     echo
-    echo "!! Run $run_id FAILED. Stopping so the cause can be investigated"
-    echo "!! before more runs are collected."
+    echo "!! Run $run_id (Config $cfg) concluded '$conclusion'. Stopping so the"
+    echo "!! cause can be investigated before more runs are collected."
     echo "!! Inspect with: gh run view $run_id --repo $REPO --log-failed"
     exit 1
   fi
